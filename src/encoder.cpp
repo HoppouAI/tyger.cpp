@@ -104,8 +104,7 @@ struct sub_masks {
 // mel [F, T, 1, N] -> [C, T/8, N]
 ggml_tensor * subsample(ggml_context * ctx, const tyger_model_impl & m, ggml_tensor * mel, const sub_masks & sm) {
     ggml_tensor * x = ggml_pad_ext(ctx, mel, 2, 1, 2, 1, 0, 0, 0, 0);
-    x = getenv("TYGER_CONV_DIRECT") ? ggml_conv_2d_direct(ctx, m.sub_conv_in_w, x, 2, 2, 0, 0, 1, 1)
-                                    : ggml_conv_2d(ctx, m.sub_conv_in_w, x, 2, 2, 0, 0, 1, 1);
+    x = ggml_conv_2d(ctx, m.sub_conv_in_w, x, 2, 2, 0, 0, 1, 1);
     x = ggml_add(ctx, x, ggml_reshape_4d(ctx, m.sub_conv_in_b, 1, 1, m.sub_conv_in_b->ne[0], 1));
     if (sm.m[0]) x = ggml_mul(ctx, x, sm.m[0]);
     x = ggml_relu(ctx, x);
