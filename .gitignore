@@ -30,3 +30,13 @@
 *.exe
 *.out
 *.app
+
+# local work
+build/
+models/
+.hf/
+.ref/
+.data/
+.venv/
+__pycache__/
+*.gguf
