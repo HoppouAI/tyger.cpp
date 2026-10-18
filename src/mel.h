@@ -6,6 +6,14 @@
 #include <cstdint>
 #include <vector>
 
+// frames of the previous window of a stream, reused when the next window overlaps it
+struct mel_window_cache {
+    int64_t start = -1;
+    int len = 0;
+    int n_valid = 0;
+    std::vector<float> frames;
+};
+
 // log-mel features as nemotron's processor computes them (preemphasis, centered stft, slaney mel, log)
 class mel_extractor {
 public:
@@ -13,6 +21,10 @@ public:
 
     // whole clip, center=True: n/hop + 1 frames of which n/hop are valid, the rest zeroed
     void offline(const float * x, int n, std::vector<float> & out, int & n_frames, int & n_valid) const;
+
+    // same as offline() for a window starting at absolute sample `start`, reusing frames the cache already has
+    void window(const float * x, int n, int64_t start, mel_window_cache & c, std::vector<float> & out, int & n_frames,
+                int & n_valid) const;
 
     // one frame from n_fft preemphasized samples starting at frame*hop - n_fft/2
     void frame(const float * seg, float * out) const;
@@ -43,4 +55,6 @@ struct mel_stream {
 
     void reset() { *this = mel_stream(); }
     void push(const mel_extractor & mel, const float * x, int n);
+    // frame f past the produced ones as a center=True pass ending here would see it: zero-padded, or zero past the end
+    void speculative(const mel_extractor & mel, int64_t f, float * out) const;
 };

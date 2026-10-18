@@ -3,6 +3,7 @@
 #include "mel.h"
 #include "model.h"
 
+#include <memory>
 #include <vector>
 
 // one compute context (its own backends and scheduler) over the shared weights
@@ -12,6 +13,8 @@ struct enc_runner {
     ggml_backend_t cpu = nullptr;
     ggml_backend_sched_t sched = nullptr;
     std::vector<uint8_t> meta;
+    std::unique_ptr<mel_extractor> mel;
+    const mel_extractor & mel_ex() const { return *mel; }
 
     explicit enc_runner(tyger_model_impl & m);
     ~enc_runner();

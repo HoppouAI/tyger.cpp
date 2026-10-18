@@ -3,12 +3,53 @@
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <cstring>
 #include <limits>
 
 static const int kGraphSize = 16384;
+
+namespace {
+struct prof {
+    bool on = getenv("TYGER_PROFILE") != nullptr;
+    std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now();
+    std::string line;
+    void mark(const char * what) {
+        if (!on) return;
+        auto now = std::chrono::steady_clock::now();
+        char b[64];
+        snprintf(b, sizeof(b), " %s %.1f", what, std::chrono::duration<double, std::milli>(now - t).count());
+        line += b;
+        t = now;
+    }
+    void done(const char * tag, ggml_backend_sched_t sched, ggml_cgraph * gf) {
+        if (!on) return;
+        fprintf(stderr, "[prof %s] nodes %d splits %d copies %d |%s ms\n", tag, ggml_graph_n_nodes(gf),
+                ggml_backend_sched_get_n_splits(sched), ggml_backend_sched_get_n_copies(sched), line.c_str());
+        static bool shown = false;
+        if (shown) return;
+        shown = true;
+        for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
+            ggml_tensor * n = ggml_graph_node(gf, i);
+            ggml_backend_t b = ggml_backend_sched_get_tensor_backend(sched, n);
+            if (b && ggml_backend_is_cpu(b)) {
+                fprintf(stderr, "  cpu op: %s %s", ggml_op_desc(n), n->name);
+                for (int k = 0; k < 2 && n->src[k]; k++) {
+                    const ggml_tensor * t = n->src[k];
+                    fprintf(stderr, " | src%d %s [%lld %lld %lld %lld] nb [%zu %zu %zu %zu] cont %d", k,
+                            ggml_type_name(t->type), (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2],
+                            (long long) t->ne[3], t->nb[0], t->nb[1], t->nb[2], t->nb[3], ggml_is_contiguous(t));
+                }
+                fprintf(stderr, "\n");
+            }
+        }
+    }
+};
+}
 
 enc_runner::enc_runner(tyger_model_impl & m_) : m(m_) {
     cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
@@ -21,6 +62,7 @@ enc_runner::enc_runner(tyger_model_impl & m_) : m(m_) {
     bes.push_back(cpu);
     sched = ggml_backend_sched_new(bes.data(), nullptr, (int) bes.size(), kGraphSize, false, true);
     meta.resize(ggml_tensor_overhead() * kGraphSize + ggml_graph_overhead_custom(kGraphSize, false));
+    mel = std::make_unique<mel_extractor>(m);
 }
 
 enc_runner::~enc_runner() {
@@ -123,7 +165,10 @@ ggml_tensor * conformer(ggml_context * ctx, const tyger_model_impl & m, const en
         ggml_tensor * vt = ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_4d(ctx, v, D, H, Lk, B), 1, 2, 0, 3)); // [Lk, D, H, B]
 
         ggml_tensor * r = mm(ctx, L.wpos, pos);                                        // [C, P]
-        r = ggml_permute(ctx, ggml_reshape_3d(ctx, r, D, H, P), 0, 2, 1, 3);                     // [D, P, H]
+        r = ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_3d(ctx, r, D, H, P), 0, 2, 1, 3));     // [D, P, H]
+        if (B > 1) {
+            r = ggml_repeat_4d(ctx, r, D, P, H, B); // vulkan matmul does not broadcast dim 3
+        }
 
         ggml_tensor * ac = mm(ctx, kp, qu);   // [Lk, Tq, H, B]
         ggml_tensor * bd = mm(ctx, r, qv);    // [P, Tq, H, B]
@@ -218,6 +263,7 @@ bool encode_offline(enc_runner & r, const std::vector<const float *> & mels, int
     }
     const int T = T3;
 
+    prof pf;
     graph_ctx g(r);
     ggml_context * ctx = g.ctx;
     ggml_tensor * mel = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, F, n_frames, 1, B);
@@ -251,10 +297,12 @@ bool encode_offline(enc_runner & r, const std::vector<const float *> & mels, int
     ggml_build_forward_expand(g.gf, x);
 
     std::lock_guard<std::mutex> lock(m.compute_mutex);
+    pf.mark("build");
     ggml_backend_sched_reset(r.sched);
     if (!ggml_backend_sched_alloc_graph(r.sched, g.gf)) {
         return false;
     }
+    pf.mark("alloc");
     {
         std::vector<float> buf((size_t) F * n_frames * B);
         for (int b = 0; b < B; b++) {
@@ -295,14 +343,18 @@ bool encode_offline(enc_runner & r, const std::vector<const float *> & mels, int
         }
         ggml_backend_tensor_set(mask, mv.data(), 0, mv.size() * sizeof(float));
     }
+    pf.mark("upload");
     if (ggml_backend_sched_graph_compute(r.sched, g.gf) != GGML_STATUS_SUCCESS) {
         return false;
     }
+    pf.mark("compute");
     T_out = T;
     C_out = (int) x->ne[0];
     out.resize((size_t) C_out * T * B);
     ggml_backend_tensor_get(x, out.data(), 0, out.size() * sizeof(float));
     out_valid = l3;
+    pf.mark("download");
+    pf.done(asr_head ? "asr" : "exact", r.sched, g.gf);
     return true;
 }
 
@@ -321,6 +373,8 @@ bool encode_stream(enc_runner & r, const std::vector<enc_stream *> & streams, in
     const int kpad = hp.conv_kernel - 1;
     const int sf = hp.sub_factor;
     out.assign(streams.size(), {});
+    // one more query than committed frames: the newest is computed with a zero-padded tail like the windowed path and never cached
+    const int n_q = n_new + 1;
 
     // first chunks start at mel 0; later ones carry 2 extra encoder frames of context that are dropped
     std::vector<int> firsts, rest;
@@ -333,23 +387,24 @@ bool encode_stream(enc_runner & r, const std::vector<enc_stream *> & streams, in
         const int B = (int) idx.size();
         const bool first = pass == 0;
         const int ctx_frames = first ? 0 : 2;
-        const int n_mel = sf * (n_new - 1 + ctx_frames) + 1;
+        const int n_mel = sf * (n_q - 1 + ctx_frames) + 1;
         const int T_sub = out_len(out_len(out_len(n_mel)));
-        GGML_ASSERT(T_sub == n_new + ctx_frames);
+        GGML_ASSERT(T_sub == n_q + ctx_frames);
 
+        prof pf;
         graph_ctx g(r);
         ggml_context * ctx = g.ctx;
         ggml_tensor * mel = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, F, n_mel, 1, B);
         ggml_set_input(mel);
-        const int Lk = left + n_new;
+        const int Lk = left + n_q;
         ggml_tensor * pos = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, C, 2 * Lk - 1);
         ggml_set_input(pos);
-        ggml_tensor * mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, Lk, n_new, 1, B);
+        ggml_tensor * mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, Lk, n_q, 1, B);
         ggml_set_input(mask);
 
         ggml_tensor * x = subsample(ctx, m, mel, sub_masks());
         if (ctx_frames > 0) {
-            x = ggml_cont(ctx, ggml_view_3d(ctx, x, C, n_new, B, x->nb[1], x->nb[2], ctx_frames * x->nb[1]));
+            x = ggml_cont(ctx, ggml_view_3d(ctx, x, C, n_q, B, x->nb[1], x->nb[2], ctx_frames * x->nb[1]));
         }
         std::vector<layer_io> io(NL);
         std::vector<ggml_tensor *> kc(NL), vc(NL), cc(NL);
@@ -375,18 +430,26 @@ bool encode_stream(enc_runner & r, const std::vector<enc_stream *> & streams, in
         ggml_build_forward_expand(g.gf, x);
 
         std::lock_guard<std::mutex> lock(m.compute_mutex);
+        pf.mark("build");
         ggml_backend_sched_reset(r.sched);
         if (!ggml_backend_sched_alloc_graph(r.sched, g.gf)) {
             return false;
         }
+        pf.mark("alloc");
         {
             std::vector<float> buf((size_t) F * n_mel * B);
             for (int b = 0; b < B; b++) {
                 const enc_stream & s = *streams[idx[b]];
                 const int64_t m0 = first ? 0 : sf * (s.frames_out - ctx_frames);
                 const int64_t off = m0 - s.mel.frames_base;
-                GGML_ASSERT(off >= 0 && (off + n_mel) * F <= (int64_t) s.mel.frames.size());
-                memcpy(buf.data() + (size_t) b * F * n_mel, s.mel.frames.data() + off * F, sizeof(float) * F * n_mel);
+                const int64_t have = (int64_t) (s.mel.frames.size() / F) - off;
+                const int64_t n_real = std::min<int64_t>(have, n_mel);
+                GGML_ASSERT(off >= 0 && n_real > 0);
+                float * dst = buf.data() + (size_t) b * F * n_mel;
+                memcpy(dst, s.mel.frames.data() + off * F, sizeof(float) * F * n_real);
+                for (int64_t f = n_real; f < n_mel; f++) {
+                    s.mel.speculative(r.mel_ex(), m0 + f, dst + f * F);
+                }
             }
             ggml_backend_tensor_set(mel, buf.data(), 0, buf.size() * sizeof(float));
         }
@@ -397,11 +460,11 @@ bool encode_stream(enc_runner & r, const std::vector<enc_stream *> & streams, in
         }
         {
             const float ninf = -std::numeric_limits<float>::infinity();
-            std::vector<float> mv((size_t) Lk * n_new * B);
+            std::vector<float> mv((size_t) Lk * n_q * B);
             for (int b = 0; b < B; b++) {
                 const int nc = streams[idx[b]]->n_cache;
-                for (int q = 0; q < n_new; q++) {
-                    float * row = mv.data() + ((size_t) b * n_new + q) * Lk;
+                for (int q = 0; q < n_q; q++) {
+                    float * row = mv.data() + ((size_t) b * n_q + q) * Lk;
                     for (int k = 0; k < Lk; k++) {
                         const int dist = (left + q) - k; // in frames, cache slot k is absolute q0 - left + k
                         const bool ok = dist >= 0 && dist <= left && k >= left - nc;
@@ -430,13 +493,17 @@ bool encode_stream(enc_runner & r, const std::vector<enc_stream *> & streams, in
                 ggml_backend_tensor_set(cc[il], cb.data(), 0, cb.size() * sizeof(float));
             }
         }
+        pf.mark("upload");
         if (ggml_backend_sched_graph_compute(r.sched, g.gf) != GGML_STATUS_SUCCESS) {
             return false;
         }
-        std::vector<float> res((size_t) C * n_new * B);
+        pf.mark("compute");
+        std::vector<float> res((size_t) C * n_q * B);
         ggml_backend_tensor_get(x, res.data(), 0, res.size() * sizeof(float));
         for (int b = 0; b < B; b++) {
-            out[idx[b]].assign(res.begin() + (size_t) b * C * n_new, res.begin() + (size_t) (b + 1) * C * n_new);
+            // the newest n_new frames, the speculative one last
+            const size_t o = (size_t) b * C * n_q + (size_t) (n_q - n_new) * C;
+            out[idx[b]].assign(res.begin() + o, res.begin() + o + (size_t) C * n_new);
         }
         // roll the caches
         std::vector<float> kn(res.size()), vn(res.size()), gn(res.size());
@@ -454,12 +521,14 @@ bool encode_stream(enc_runner & r, const std::vector<enc_stream *> & streams, in
             ggml_backend_tensor_get(io[il].glu, gn.data(), 0, gn.size() * sizeof(float));
             for (int b = 0; b < B; b++) {
                 enc_stream & s = *streams[idx[b]];
-                const size_t o = (size_t) b * C * n_new;
+                const size_t o = (size_t) b * C * n_q;
                 roll(s.k[il], left, kn.data() + o);
                 roll(s.v[il], left, vn.data() + o);
                 roll(s.conv[il], kpad, gn.data() + o);
             }
         }
+        pf.mark("download");
+        pf.done("fast", r.sched, g.gf);
         for (int b = 0; b < B; b++) {
             enc_stream & s = *streams[idx[b]];
             s.frames_out += n_new;

@@ -21,7 +21,7 @@ struct host_linear {
         }
         const int64_t n = w.n_out;
 #if defined(_OPENMP)
-#pragma omp parallel for num_threads(n_threads) schedule(static) if (n_threads > 1 && n >= 1024)
+#pragma omp parallel for num_threads(n_threads) schedule(static) if (n_threads > 1 && n >= 256)
 #endif
         for (int64_t o = 0; o < n; o++) {
             float s = 0.0f;

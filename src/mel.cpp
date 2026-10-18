@@ -1,6 +1,7 @@
 #include "mel.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 
 static const double kPi = 3.14159265358979323846;
@@ -85,6 +86,41 @@ void mel_extractor::offline(const float * x, int n, std::vector<float> & out, in
     }
 }
 
+void mel_extractor::window(const float * x, int n, int64_t start, mel_window_cache & c, std::vector<float> & out,
+                           int & n_frames, int & n_valid) const {
+    const int pad = n_fft_ / 2;
+    std::vector<float> y(n + 2 * pad, 0.0f);
+    if (n > 0) {
+        y[pad] = x[0];
+        for (int i = 1; i < n; i++) {
+            y[pad + i] = x[i] - preemph_ * x[i - 1];
+        }
+    }
+    n_frames = n / hop_ + 1;
+    n_valid = n / hop_;
+    out.assign((size_t) n_frames * n_mels_, 0.0f);
+    const bool can = c.start >= 0 && start >= c.start && (start - c.start) % hop_ == 0;
+    const int64_t shift = can ? (start - c.start) / hop_ : 0;
+    for (int t = 0; t < n_valid; t++) {
+        bool reuse = false;
+        const int64_t tp = t + shift;
+        // a frame is the same in both windows when it sees only real samples in both (or both share the start)
+        if (can && tp < c.n_valid && (int64_t) hop_ * tp + pad <= c.len && (int64_t) hop_ * t + pad <= n) {
+            reuse = start == c.start || ((int64_t) hop_ * t - pad >= 1 && (int64_t) hop_ * tp - pad >= 1);
+        }
+        float * dst = out.data() + (size_t) t * n_mels_;
+        if (reuse) {
+            memcpy(dst, c.frames.data() + (size_t) tp * n_mels_, sizeof(float) * n_mels_);
+        } else {
+            frame(y.data() + (size_t) t * hop_, dst);
+        }
+    }
+    c.start = start;
+    c.len = n;
+    c.n_valid = n_valid;
+    c.frames = out;
+}
+
 void mel_stream::push(const mel_extractor & mel, const float * x, int n) {
     const int nf = mel.n_fft(), hop = mel.hop(), nm = mel.n_mels();
     const float a = mel.preemph();
@@ -113,4 +149,19 @@ void mel_stream::push(const mel_extractor & mel, const float * x, int n) {
         pre.erase(pre.begin(), pre.begin() + (size_t) (keep_from - base));
         base = keep_from;
     }
+}
+
+void mel_stream::speculative(const mel_extractor & mel, int64_t f, float * out) const {
+    const int nf = mel.n_fft(), hop = mel.hop(), nm = mel.n_mels();
+    if (f * hop >= n_in) {
+        std::fill(out, out + nm, 0.0f);
+        return;
+    }
+    std::vector<float> seg(nf);
+    const int64_t s0 = f * hop - nf / 2;
+    for (int i = 0; i < nf; i++) {
+        const int64_t ai = s0 + i;
+        seg[i] = (ai < 0 || ai >= n_in || ai < base) ? 0.0f : pre[(size_t) (ai - base)];
+    }
+    mel.frame(seg.data(), out);
 }

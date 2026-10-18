@@ -37,6 +37,8 @@ struct session_impl {
 
     // audio and turn state, the reference session's fields
     std::vector<float> win_u, win_a, turn_u, pre_u, seed_u;
+    int64_t win_end = 0; // absolute samples appended to the windows since they were cleared
+    mel_window_cache mel_u, mel_a;
     bool has_seed = false;
     double seg_s = 0.0;
     std::shared_ptr<seg_list> segs;

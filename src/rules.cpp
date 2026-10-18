@@ -9,6 +9,9 @@ static const char * kStateNames[4] = {"LISTEN", "HOLD", "SPEAK", "BACKCHANNEL"};
 void session_impl::clear_turn_state() {
     win_u.clear();
     win_a.clear();
+    win_end = 0;
+    mel_u = mel_window_cache();
+    mel_a = mel_window_cache();
     turn_u.clear();
     seg_s = 0.0;
     segs = std::make_shared<seg_list>();
@@ -113,6 +116,7 @@ bool rules_begin_hop(session_impl & s, const float * uh, const float * ah, int n
     const size_t wcap = (size_t) hp.window_samples();
     append_tail(s.win_u, uh, n, wcap);
     append_tail(s.win_a, ah, n, wcap);
+    s.win_end += n;
     if (mode == TYGER_MODE_LISTEN) {
         s.turn_u.insert(s.turn_u.end(), uh, uh + n);
     } else {

@@ -28,7 +28,7 @@ add_subdirectory(third_party/ggml)
 
 find_package(Threads REQUIRED)
 
-add_library(tyger SHARED
+add_library(tyger_obj OBJECT
     src/tyger.cpp
     src/model.cpp
     src/mel.cpp
@@ -38,24 +38,38 @@ add_library(tyger SHARED
     src/rules.cpp
     src/engine.cpp
 )
-target_include_directories(tyger PUBLIC include PRIVATE src)
-target_compile_definitions(tyger PRIVATE TYGER_BUILD)
-target_link_libraries(tyger PRIVATE ggml Threads::Threads)
+target_include_directories(tyger_obj PUBLIC include src)
+target_compile_definitions(tyger_obj PUBLIC TYGER_BUILD)
+target_link_libraries(tyger_obj PUBLIC ggml Threads::Threads)
 find_package(OpenMP)
 if (OpenMP_CXX_FOUND)
-    target_link_libraries(tyger PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(tyger_obj PUBLIC OpenMP::OpenMP_CXX)
 endif()
 if (TYGER_NATIVE)
     if (MSVC)
-        target_compile_options(tyger PRIVATE /arch:AVX2)
+        target_compile_options(tyger_obj PRIVATE /arch:AVX2)
     else()
-        target_compile_options(tyger PRIVATE -march=native)
+        target_compile_options(tyger_obj PRIVATE -march=native)
     endif()
 endif()
 if (MSVC)
-    target_compile_options(tyger PRIVATE /W3 /utf-8 /fp:precise)
+    target_compile_options(tyger_obj PRIVATE /W3 /utf-8 /fp:precise)
 else()
-    target_compile_options(tyger PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_compile_options(tyger_obj PRIVATE -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden)
+endif()
+
+add_library(tyger SHARED $<TARGET_OBJECTS:tyger_obj>)
+target_include_directories(tyger PUBLIC include)
+target_link_libraries(tyger PRIVATE ggml Threads::Threads)
+if (OpenMP_CXX_FOUND)
+    target_link_libraries(tyger PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+option(TYGER_BUILD_TESTS "tyger: build tests" ON)
+if (TYGER_BUILD_TESTS)
+    add_executable(test-stream tests/test_stream.cpp tools/common/wav.cpp)
+    target_include_directories(test-stream PRIVATE tools/common)
+    target_link_libraries(test-stream PRIVATE tyger_obj)
 endif()
 
 if (TYGER_BUILD_TOOLS)

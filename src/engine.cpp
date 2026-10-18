@@ -1,6 +1,9 @@
 #include "engine.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 
@@ -201,7 +204,7 @@ bool engine::encode_exact(std::vector<hop_item> & items, std::vector<std::vector
     hu.assign(n, {});
     ha.assign(n, {});
     n_frames.assign(2 * n, 0);
-    struct win_ref { size_t item; bool agent; const std::vector<float> * w; };
+    struct win_ref { size_t item; bool agent; const std::vector<float> * w; mel_window_cache * mc; int64_t start; };
     std::map<size_t, std::vector<win_ref>> groups;
     for (size_t i = 0; i < n; i++) {
         session_impl & s = *items[i].s;
@@ -214,19 +217,24 @@ bool engine::encode_exact(std::vector<hop_item> & items, std::vector<std::vector
                 n_frames[2 * i + a] = (int) (zc->second.size() / C);
                 continue;
             }
-            groups[w.size()].push_back({i, a != 0, &w});
+            groups[w.size()].push_back({i, a != 0, &w, a ? &s.mel_a : &s.mel_u, s.win_end - (int64_t) w.size()});
         }
     }
     for (auto & [len, refs] : groups) {
+        auto tm0 = std::chrono::steady_clock::now();
         std::vector<std::vector<float>> feats(refs.size());
         std::vector<const float *> ptrs;
         std::vector<int> valid;
         int nf = 0;
         for (size_t k = 0; k < refs.size(); k++) {
             int nv = 0;
-            mel.offline(refs[k].w->data(), (int) len, feats[k], nf, nv);
+            mel.window(refs[k].w->data(), (int) len, refs[k].start, *refs[k].mc, feats[k], nf, nv);
             ptrs.push_back(feats[k].data());
             valid.push_back(nv);
+        }
+        if (getenv("TYGER_PROFILE")) {
+            fprintf(stderr, "[prof mel] %zu windows %.1f ms\n", refs.size(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tm0).count());
         }
         std::vector<float> out;
         int T = 0, Co = 0;
@@ -350,6 +358,7 @@ bool engine::tick(std::vector<hop_item> & items, std::string & err) {
         nlive[i] = std::min({HF, nfr[2 * i], nfr[2 * i + 1], (int) act[i].size()});
     }
 
+    auto tg0 = std::chrono::steady_clock::now();
     struct pending { size_t item; frame_result fr; };
     std::vector<pending> finals;
     for (int j = 0; j < HF; j++) {
@@ -373,6 +382,10 @@ bool engine::tick(std::vector<hop_item> & items, std::string & err) {
     }
     for (size_t i = 0; i < n; i++) {
         items[i].s->hops++;
+    }
+    if (getenv("TYGER_PROFILE")) {
+        fprintf(stderr, "[prof gru] %zu sessions %.1f ms\n", n,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tg0).count());
     }
 
     // endpoint transcripts: the hop resolves once they are ready
