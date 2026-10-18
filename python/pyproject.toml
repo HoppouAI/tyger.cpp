@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tyger-cpp"
+version = "0.1.0"
+description = "python bindings for tyger.cpp, realtime turn taking and asr"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[tool.setuptools]
+packages = ["tyger_cpp"]
+
+[tool.setuptools.package-data]
+tyger_cpp = ["*.dll", "*.so", "*.dylib"]
