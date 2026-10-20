@@ -209,6 +209,12 @@ Checked against the PyTorch reference (`scripts/reference.py`, `scripts/compare.
 - CPU F32 encoder output after 15 layers is within 1.4e-4 of PyTorch, transcripts are identical.
 - Streaming in exact mode reproduces every event of the reference, times and transcripts, on CPU and Vulkan at F32 and F16, both in listen only clips and with agent audio and speaking spans (barge ins included).
 
+## Nix and NixOS
+
+The repo is also a flake. `nix develop` drops into a build shell with cmake, ninja, gcc and the whole vulkan stack (headers, loader and `glslc`), plus the quick commands `tybuild` (initializes the submodule if needed, then configures and builds), `tycli`, `tyserver` and `tytest` for running the binaries in `build/bin`. The model conversion environment (numpy, gguf, librosa) is `nix develop .#python`, and `nix build` produces the same install layout the NixOS module ships, without needing the submodule checked out — ggml comes from the pinned submodule rev and the output is a portable build.
+
+The flake also carries a NixOS module (`nixosModules.default`) that runs `tyger-server` as a hardened systemd service (`services.tyger-server`). Its options mirror the server's CLI flags — the full walkthrough with the option table and host requirements lives in [nix/README.md](nix/README.md).
+
 ## Notes
 
 - Vulkan uses F32 accumulation for every matmul here, which keeps F16 weights in line with F32. If a GPU still drifts, setting the environment variable `GGML_VK_DISABLE_COOPMAT=1` (and `GGML_VK_DISABLE_COOPMAT2=1`) makes Vulkan matmuls more exact at some speed cost on quantized files.
