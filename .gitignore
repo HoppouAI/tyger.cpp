@@ -40,3 +40,7 @@ models/
 .venv/
 __pycache__/
 *.gguf
+
+# nix
+result
+result-*
