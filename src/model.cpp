@@ -177,6 +177,13 @@ bool tyger_model_load_impl(tyger_model_impl & m, const char * path, int backend,
         }
     }
 
+    const int64_t turn_key = r.key("tyger.turn_only");
+    const bool turn_only = turn_key >= 0 && gguf_get_val_bool(r.g, turn_key);
+    if (turn_only && enable_asr) {
+        err = "this gguf is turn taking only, it has no asr weights. load it with asr off (--no-asr, or enable_asr = false in the model params)";
+        return false;
+    }
+
     tyger_hparams & hp = m.hp;
     r.u32("tyger.audio.sample_rate", hp.sample_rate);
     r.u32("tyger.audio.n_fft", hp.n_fft);
@@ -449,11 +456,11 @@ bool tyger_model_load_impl(tyger_model_impl & m, const char * path, int backend,
 
     char buf[1024];
     snprintf(buf, sizeof(buf),
-             "{\"arch\":\"tyger\",\"file_type\":\"%s\",\"device\":\"%s\",\"gpu\":%s,\"asr\":%s,"
+             "{\"arch\":\"tyger\",\"file_type\":\"%s\",\"device\":\"%s\",\"gpu\":%s,\"asr\":%s,\"turn_only\":%s,"
              "\"sample_rate\":%d,\"hop_samples\":%d,\"frame_s\":%.3f,\"window_s\":%.1f,\"encoder_layers\":%d,"
              "\"feature_layer\":%d,\"gru_width\":%d,\"gru_layers\":%d,\"vocab\":%d,\"weights_mib\":%.1f}",
              m.ftype_name.c_str(), ggml_backend_dev_name(m.dev), m.gpu ? "true" : "false",
-             enable_asr ? "true" : "false", hp.sample_rate, hp.hop_samples(), hp.frame_s, hp.window_s, hp.enc_layers,
+             enable_asr ? "true" : "false", turn_only ? "true" : "false", hp.sample_rate, hp.hop_samples(), hp.frame_s, hp.window_s, hp.enc_layers,
              hp.feature_layer, hp.tt_width, hp.tt_layers, hp.vocab, ggml_backend_buffer_get_size(m.buf_w) / 1048576.0);
     m.info_json = buf;
     return true;

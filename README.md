@@ -22,10 +22,43 @@ The Nemotron encoder, prompt projector and RNNT decoder are quantized. The turn 
 | File | Size | Notes |
 |---|---|---|
 | `tyger-f32.gguf` | 2.6 GB | reference precision |
-| `tyger-f16.gguf` | 1.33 GB | recommended for GPU, matches F32 events |
+| `tyger-f16.gguf` | 1.33 GB | recommended for GPU, no decision differences from F32 in testing |
 | `tyger-q8_0.gguf` | 737 MB | recommended for CPU, transcripts match F32 apart from a comma |
-| `tyger-q6_k.gguf` | 589 MB | small punctuation and filler word differences |
-| `tyger-q4_k.gguf` | 461 MB | Q4_K_M style mix, worse transcripts and it missed 2 of 5 turn events on the test clip, only use it when memory is tight |
+| `tyger-q6_k.gguf` | 589 MB | small punctuation and filler word differences, close to Q8_0 on decisions |
+| `tyger-q4_k.gguf` | 461 MB | Q4_K_M style mix, worse transcripts and noticeably different decisions, only use it when memory is tight |
+
+How often each quant's turn decisions differ from F32, across 188 ENDPOINT, BARGE and BACKCHANNEL events in four test runs (about 5 minutes of audio, exact mode, Vulkan). An event that moved by one frame counts as one missing and one extra.
+
+| Quant | Missing | Extra |
+|---|---|---|
+| F16 | 0 | 0 |
+| Q8_0 | 1 | 2 |
+| Q6_K | 2 | 1 |
+| Q4_K | 12 | 9 |
+
+## Turn taking without ASR
+
+The turn decisions never use the ASR, they read the output of encoder layer 15 plus the audio energy. So you can run them on their own, with identical results and less memory.
+
+The quick way is to turn ASR off when loading any model: `--no-asr` on the CLI and server, `asr=False` in Python, or `enable_asr = false` in the C API. Layers 16 to 24, the decoder and the tokenizer are not loaded, and hops no longer stall on transcripts. ENDPOINT, BARGE, BACKCHANNEL and FRAME all still fire, the text fields are just empty and there are no PARTIAL events.
+
+To also get a smaller file, export a turn only GGUF with `--turn-only`:
+
+```bash
+build/bin/Release/tyger-quantize models/tyger-f32.gguf models/tyger-turn-q8_0.gguf q8_0 --turn-only
+```
+
+| File | Size |
+|---|---|
+| `tyger-turn-f32.gguf` | 1.59 GB |
+| `tyger-turn-f16.gguf` | 822 MB |
+| `tyger-turn-q8_0.gguf` | 464 MB |
+| `tyger-turn-q6_k.gguf` | 371 MB |
+| `tyger-turn-q4_k.gguf` | 291 MB |
+
+These must be loaded with ASR off, otherwise the load fails with an error saying so. Their events are byte identical to the matching full file with ASR off. The Nemotron encoder can not be removed, the GRU needs its first 15 layers.
+
+Q4_K loses the most on decisions, and a turn only file is all decisions, so Q8_0 or Q6_K are the better picks here.
 
 ## Building
 
@@ -70,7 +103,7 @@ python scripts/convert_tyger_to_gguf.py tyger-bundle --outtype f32 --outfile mod
 build/bin/Release/tyger-quantize models/tyger-f32.gguf models/tyger-q8_0.gguf q8_0
 ```
 
-Quantize types are `f16`, `q8_0`, `q6_k`, `q5_k`, `q4_k` and `q4_k_s`. Converting straight to F16 also works with `--outtype f16`.
+Quantize types are `f32`, `f16`, `q8_0`, `q6_k`, `q5_k`, `q4_k` and `q4_k_s`. Converting straight to F16 also works with `--outtype f16`. Add `--turn-only` to leave out everything the ASR needs, see [Turn taking without ASR](#turn-taking-without-asr).
 
 ## Command line
 

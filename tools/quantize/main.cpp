@@ -52,7 +52,7 @@ struct qtype {
 };
 
 static const qtype kTypes[] = {
-    {"f16", GGML_TYPE_F16, 1}, {"q8_0", GGML_TYPE_Q8_0, 7}, {"q6_k", GGML_TYPE_Q6_K, 18},
+    {"f32", GGML_TYPE_F32, 0}, {"f16", GGML_TYPE_F16, 1}, {"q8_0", GGML_TYPE_Q8_0, 7}, {"q6_k", GGML_TYPE_Q6_K, 18},
     {"q5_k", GGML_TYPE_Q5_K, 17}, {"q4_k", GGML_TYPE_Q4_K, 15}, {"q4_k_s", GGML_TYPE_Q4_K, 14},
 };
 
@@ -76,13 +76,28 @@ static ggml_type pick(const qtype & q, const std::string & name, const ggml_tens
     return ty;
 }
 
+// what the turn taker needs: mel filters, subsampling, the encoder up to its feature layer and the gru
+static bool turn_tensor(const std::string & name, int feature_layer) {
+    const int il = layer_of(name);
+    if (il >= 0) return il < feature_layer;
+    return name.rfind("encoder.", 0) == 0 || name.rfind("turn_taker.", 0) == 0 || name.rfind("frontend.", 0) == 0;
+}
+
 int main(int argc, char ** argv) {
-    if (argc < 4) {
-        fprintf(stderr, "usage: tyger-quantize in.gguf out.gguf TYPE [threads]\n  TYPE: f16 q8_0 q6_k q5_k q4_k q4_k_s\n");
+    bool turn_only = false;
+    std::vector<std::string> args;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--turn-only") == 0) turn_only = true;
+        else args.push_back(argv[i]);
+    }
+    if (args.size() < 3) {
+        fprintf(stderr, "usage: tyger-quantize in.gguf out.gguf TYPE [threads] [--turn-only]\n"
+                        "  TYPE: f32 f16 q8_0 q6_k q5_k q4_k q4_k_s\n"
+                        "  --turn-only  drop the asr weights and tokenizer, keeps only what turn taking needs\n");
         return 1;
     }
-    const std::string in = argv[1], out = argv[2], tname = argv[3];
-    const int nth = argc > 4 ? atoi(argv[4]) : (int) std::thread::hardware_concurrency();
+    const std::string in = args[0], out = args[1], tname = args[2];
+    const int nth = args.size() > 3 ? atoi(args[3].c_str()) : (int) std::thread::hardware_concurrency();
     const qtype * q = nullptr;
     for (auto & t : kTypes) {
         if (tname == t.name) q = &t;
@@ -105,19 +120,32 @@ int main(int argc, char ** argv) {
         int64_t k = gguf_find_key(g, "tyger.encoder.num_layers");
         if (k >= 0) n_layers = (int) gguf_get_val_u32(g, k);
     }
+    int feature_layer = 15;
+    {
+        int64_t k = gguf_find_key(g, "tyger.turn_taker.feature_layer");
+        if (k >= 0) feature_layer = (int) gguf_get_val_u32(g, k);
+    }
 
     gguf_context * go = gguf_init_empty();
     gguf_set_kv(go, g);
     gguf_set_val_u32(go, "general.file_type", (uint32_t) q->file_type);
+    if (turn_only) {
+        gguf_set_val_bool(go, "tyger.turn_only", true);
+        gguf_remove_key(go, "tokenizer.ggml.model");
+        gguf_remove_key(go, "tokenizer.ggml.tokens");
+        gguf_remove_key(go, "tokenizer.ggml.token_special");
+    }
 
     const int64_t nt = gguf_get_n_tensors(g);
     ggml_init_params cp = {(size_t) (nt + 4) * ggml_tensor_overhead(), nullptr, true};
     ggml_context * ctx_out = ggml_init(cp);
     std::vector<std::unique_ptr<std::vector<uint8_t>>> bufs;
     size_t bytes_in = 0, bytes_out = 0;
-    int n_quant = 0;
+    int n_quant = 0, n_kept = 0;
     for (int64_t i = 0; i < nt; i++) {
         const std::string name = gguf_get_tensor_name(g, i);
+        if (turn_only && !turn_tensor(name, feature_layer)) continue;
+        n_kept++;
         ggml_tensor * t = ggml_get_tensor(ctx_in, name.c_str());
         bytes_in += ggml_nbytes(t);
         ggml_type ty = quantizable(name, t) ? pick(*q, name, t, n_layers) : t->type;
@@ -159,7 +187,7 @@ int main(int argc, char ** argv) {
         bufs.push_back(std::move(buf));
         gguf_add_tensor(go, o);
     }
-    fprintf(stderr, "%s: %lld tensors, %d converted to %s, %.1f MiB -> %.1f MiB\n", out.c_str(), (long long) nt,
+    fprintf(stderr, "%s: %lld tensors, %d converted to %s, %.1f MiB -> %.1f MiB\n", out.c_str(), (long long) n_kept,
             n_quant, q->name, bytes_in / 1048576.0, bytes_out / 1048576.0);
     if (!gguf_write_to_file(go, out.c_str(), false)) {
         fprintf(stderr, "write failed\n");
