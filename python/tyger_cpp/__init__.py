@@ -75,6 +75,7 @@ def load_library(path: str | os.PathLike | None = None):
     lib.tyger_session_open.restype = vp
     lib.tyger_session_close.argtypes = [vp]
     lib.tyger_session_reset.argtypes = [vp]
+    lib.tyger_session_reset_keep.argtypes = [vp]
     lib.tyger_session_set_params.argtypes = [vp, C.POINTER(_SessionParams)]
     lib.tyger_session_get_params.argtypes = [vp, C.POINTER(_SessionParams)]
     fp = C.POINTER(C.c_float)
@@ -220,9 +221,9 @@ class Session:
         if self._lib.tyger_session_set_params(self._h, C.byref(p)) != 0:
             raise ValueError("tyger: " + _err(self._lib))
 
-    def reset(self):
-        """start a new turn, applied before the next hop"""
-        self._lib.tyger_session_reset(self._h)
+    def reset(self, keep: bool = False):
+        """start a new turn, applied before the next hop. keep seeds it with the last 2 s of speaking mode user audio"""
+        (self._lib.tyger_session_reset_keep if keep else self._lib.tyger_session_reset)(self._h)
 
     def feed(self, user, agent=None, mode: str | int = "listen") -> list[dict]:
         u = _pcm(user)

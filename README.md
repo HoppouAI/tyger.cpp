@@ -146,7 +146,7 @@ Then:
 - Send 16 kHz PCM as **binary** messages, any size. Every full 320 ms hop is processed.
 - Send **text** JSON to control the session:
   - `{"type":"mode","mode":"speaking"}` while the agent is talking, `{"type":"mode","mode":"listen"}` when it stops.
-  - `{"type":"reset"}` to start a new turn.
+  - `{"type":"reset"}` to start a new turn. After a `BARGE` the turn starts with the speech that triggered it. Add `"keep":true` when the client decides on a barge itself, for example after the user talked over the agent for a while, and the last 2 s of user audio from speaking mode start the turn instead of being dropped.
   - `{"type":"config","ep_thr":0.9}` to change thresholds or the encoder on the fly.
 - The server answers with `{"type":"ready",...}` once, then `{"type":"events","events":[...]}` for every hop that produced something, and `{"type":"error","message":"..."}` if something is wrong.
 

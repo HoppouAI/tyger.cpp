@@ -131,6 +131,12 @@ void tyger_session_reset(tyger_session * session) {
     if (session) session->s->pending_reset = true;
 }
 
+void tyger_session_reset_keep(tyger_session * session) {
+    if (!session) return;
+    session->s->keep_pre = true;
+    session->s->pending_reset = true;
+}
+
 int tyger_session_set_params(tyger_session * session, const tyger_session_params * params) {
     if (!session || !valid_params(params)) {
         set_err("invalid session params");

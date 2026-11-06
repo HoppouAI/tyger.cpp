@@ -153,6 +153,7 @@ struct client {
     std::vector<float> u, a;
     int mode = TYGER_MODE_LISTEN;
     bool reset = false;
+    bool reset_keep = false;
     bool lag_warned = false;
 
     ~client() { tyger_session_close(sess); }
@@ -220,8 +221,9 @@ struct server {
                 c.u.erase(c.u.begin(), c.u.begin() + hop);
                 c.a.erase(c.a.begin(), c.a.begin() + hop);
                 if (c.reset) {
-                    tyger_session_reset(c.sess);
-                    c.reset = false;
+                    if (c.reset_keep) tyger_session_reset_keep(c.sess);
+                    else tyger_session_reset(c.sess);
+                    c.reset = c.reset_keep = false;
                 }
                 const double backlog = (double) c.u.size() / sr;
                 if (backlog > 2.0 && !c.lag_warned) {
@@ -293,6 +295,7 @@ struct server {
         } else if (type == "reset") {
             std::lock_guard<std::mutex> lk(c.mu);
             c.reset = true;
+            c.reset_keep = m.count("keep") && (m["keep"] == "true" || m["keep"] == "1");
         } else if (type == "config") {
             tyger_session_params p;
             tyger_session_get_params(c.sess, &p);

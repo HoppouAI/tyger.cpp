@@ -100,6 +100,7 @@ TYGER_API tyger_session_params tyger_session_default_params(const tyger_model * 
 TYGER_API tyger_session * tyger_session_open(tyger_model * model, const tyger_session_params * params);
 TYGER_API void            tyger_session_close(tyger_session * session);
 TYGER_API void            tyger_session_reset(tyger_session * session); // a new turn, applied before the next hop
+TYGER_API void            tyger_session_reset_keep(tyger_session * session); // same, but the last 2 s of user audio from speaking mode start the turn
 TYGER_API int             tyger_session_set_params(tyger_session * session, const tyger_session_params * params);
 TYGER_API int             tyger_session_get_params(const tyger_session * session, tyger_session_params * params);
 

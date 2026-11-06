@@ -95,6 +95,11 @@ bool rules_begin_hop(session_impl & s, const float * uh, const float * ah, int n
         std::vector<float> seed;
         bool had_seed = s.has_seed;
         if (had_seed) seed = s.seed_u;
+        // a barge the client called itself, so the talk leading up to it starts the turn
+        if (s.keep_pre.exchange(false) && !had_seed && !s.pre_u.empty()) {
+            seed = s.pre_u;
+            had_seed = true;
+        }
         s.clear_turn_state();
         {
             std::lock_guard<std::mutex> lk(s.asr_mu);

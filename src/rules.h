@@ -52,6 +52,7 @@ struct session_impl {
     double partial_at_s = 0.0;
     std::string words_sent;
     std::atomic<bool> pending_reset{true};
+    std::atomic<bool> keep_pre{false};
 
     // written by the asr thread
     std::mutex asr_mu;
